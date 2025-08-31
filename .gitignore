@@ -1,0 +1,109 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# === Node / Frontend ===
+node_modules/
+dist/
+build/
+.tmp/
+.temp/
+.cache/
+.vite/
+vite.svg
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.npm/
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+.pnpm-debug.log*
+yarn-error.log*
+yarn-debug.log*
+npm-debug.log*
+pnpm-debug.log*
+coverage/
+.nyc_output/
+.DS_Store
+Thumbs.db
+
+# Optional hosts (uncomment if used)
+.next/
+.vercel/
+.netlify/
+.turbo/
+
+# Test tooling (optional — uncomment if used)
+# cypress/
+# cypress/screenshots/
+# cypress/videos/
+# playwright-report/
+# test-results/
+# .playwright/
+# .vitest/
+
+# === Tauri / Rust ===
+/src-tauri/target/
+/src-tauri/target-debug/
+/target/                 # if you ever build from workspace root
+**/*.dSYM
+**/*.pdb
+
+# Commit Cargo.lock for apps (recommended). Do NOT ignore:
+# /src-tauri/Cargo.lock
+
+# Generated icons & bundles are under target; keep sources:
+# /src-tauri/icons/** is usually hand-authored — keep it tracked.
+
+# Tauri CLI state (if present)
+.tauri/
+
+# === Signing / Secrets (never commit) ===
+# Remove lines below only if you explicitly intend to check in public certs.
+*.key
+*.p12
+*.pfx
+*.pem
+*.der
+*.crt
+*.cer
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# === IDE / OS ===
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.fleet/
+.vscode-test/
