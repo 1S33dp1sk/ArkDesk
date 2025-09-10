@@ -45,10 +45,10 @@ export default function Tabs({
   const [showLeft, setShowLeft] = useState(false);
   const [showRight, setShowRight] = useState(false);
 
-  const activeIndex = Math.max(
-    0,
-    tabs.findIndex((t) => t.key === active)
-  );
+  // const activeIndex = Math.max(
+  //   0,
+  //   tabs.findIndex((t) => t.key === active)
+  // );
 
   const sizes = useMemo(
     () => ({
@@ -219,7 +219,7 @@ export default function Tabs({
         >
           {variant === "segmented" ? (
             <div className={cx("flex items-center gap-1", segWrap)}>
-              {tabs.map((t, i) => {
+              {tabs.map((t) => {
                 const selected = t.key === active;
                 return (
                   <button

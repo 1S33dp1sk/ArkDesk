@@ -50,9 +50,7 @@ function InputNum(props: React.InputHTMLAttributes<HTMLInputElement>) {
     />
   );
 }
-function Chip({ children }: { children: React.ReactNode }) {
-  return <span className="px-2 py-1 rounded-md border border-border bg-white/5 text-[11px]">{children}</span>;
-}
+
 function SegControl({
   value,
   onChange,

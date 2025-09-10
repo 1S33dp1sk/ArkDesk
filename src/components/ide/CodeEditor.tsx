@@ -124,7 +124,7 @@ export default function CodeEditor({
     if ((e.metaKey || e.ctrlKey) && e.key === "/") {
       e.preventDefault();
       const s0 = getLineStart(val, start);
-      const s1 = getLineStart(val, end);
+      // const s1 = getLineStart(val, end);
       const first = s0;
       const last = getLineEnd(val, end);
       const block = val.slice(first, last);

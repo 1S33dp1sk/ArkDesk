@@ -4,7 +4,7 @@ import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import BackgroundFX from "./components/BackgroundFX";
 import Shell from "./components/Shell";
 
-const Home     = React.lazy(() => import("./pages/Home"));
+const Home     = React.lazy(() => import("./pages/_Home"));
 const Explore  = React.lazy(() => import("./pages/Explore"));
 const Mempool  = React.lazy(() => import("./pages/Mempool"));
 const NodePage = React.lazy(() => import("./pages/Node"));

@@ -82,7 +82,7 @@ async fn ark_endpoints_set_active(app: AppHandle, state: State<'_, AppState>, id
 {
   // stop watcher without holding the lock across await
   let prev = { state.watcher.lock().take() };
-  if let Some(w) = prev { w.stop().await; }
+  if let Some(mut w) = prev { w.stop().await; }
 
   let mut s = state.endpoints.write().clone();
   endpoints::set_active(&mut s, &id).map_err(|e| e.to_string())?;
@@ -197,7 +197,7 @@ async fn ark_watch_start(
 ) -> Result<(), String> {
   // stop previous watcher first (outside await)
   let prev = { state.watcher.lock().take() };
-  if let Some(w) = prev { w.stop().await; }
+  if let Some(mut w) = prev { w.stop().await; }
 
   let (base, headers, insecure) = {
     let store = state.endpoints.read();
@@ -217,7 +217,7 @@ async fn ark_watch_start(
 #[tauri::command]
 async fn ark_watch_stop(state: State<'_, AppState>) -> Result<(), String> {
   let prev = { state.watcher.lock().take() };
-  if let Some(w) = prev { w.stop().await; }
+  if let Some(mut w) = prev { w.stop().await; }
   Ok(())
 }
 

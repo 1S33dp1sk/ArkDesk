@@ -89,7 +89,7 @@ export default function SplitPane({
       const delta = cur - clientXY;
       setA(clamp(base + delta, minA, maxA));
     };
-    const onUp = (ev: PointerEvent) => {
+    const onUp = () => {
       setDragging(false);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);

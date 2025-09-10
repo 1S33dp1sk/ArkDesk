@@ -1,5 +1,4 @@
 // src/components/BackgroundFX.tsx
-import React from "react";
 
 export default function BackgroundFX() {
   return (

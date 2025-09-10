@@ -1,5 +1,6 @@
 // src/ui/Section.tsx
-import React, { forwardRef, ReactNode } from "react";
+import { forwardRef, ReactNode } from "react";
+import type { JSX as ReactJSX } from "react"; // ← add this
 
 type Scroll = "none" | "x" | "y" | "both";
 type Pad = "none" | "sm" | "md" | "lg";
@@ -9,7 +10,7 @@ type Variant = "card" | "glass" | "plain";
 type Surface = 0 | 1 | 2 | 3 | 4;
 
 export type SectionProps = {
-  as?: keyof JSX.IntrinsicElements;
+  as?: keyof ReactJSX.IntrinsicElements; // ← use the imported namespace
   title?: ReactNode;
   actions?: ReactNode;
   footer?: ReactNode;
@@ -19,9 +20,9 @@ export type SectionProps = {
   footerPadding?: Pad;
   rounded?: Round;
   border?: boolean;
-  mode?: Mode;                 // "auto" = inherit, or force "light"/"dark" via data-theme
-  variant?: Variant;           // visual style preset
-  surface?: Surface;           // surface depth (uses .surface-*)
+  mode?: Mode;
+  variant?: Variant;
+  surface?: Surface;
   id?: string;
   children: ReactNode;
   className?: string;
@@ -30,6 +31,7 @@ export type SectionProps = {
   footerClassName?: string;
   "aria-busy"?: boolean;
 };
+
 
 const padMap: Record<Pad, string> = { none: "p-0", sm: "p-3", md: "p-4", lg: "p-6" };
 const roundMap: Record<Round, string> = { md: "rounded-md", lg: "rounded-lg", xl: "rounded-xl", "2xl": "rounded-2xl" };

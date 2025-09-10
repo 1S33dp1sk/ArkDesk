@@ -1,5 +1,5 @@
 // src/pages/IDE.tsx — Ark IDE (no Solidity), with status bar + autosave
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import SplitPane from "../components/ide/SplitPane";
 import Tabs, { TabDef } from "../components/ide/Tabs";
 import CodeEditor from "../components/ide/CodeEditor";
@@ -247,20 +247,26 @@ export default function IDE() {
   const dirty = buffer !== (fnode?.content ?? "");
   const tryOpenFile = async (path: string) => {
     if (path === activeFile) return;
+
     if (dirty && !autosave) {
-      const ok = await confirm({
-        title: "Discard unsaved changes?",
-        message: `You have unsaved changes in ${fnode?.name}. Save or discard before switching.`,
-        confirmText: "Discard",
-        cancelText: "Cancel",
-        extra: { secondary: "Save & Switch" },
+      const save = await confirm({
+        title: "Unsaved changes",
+        message: `You have unsaved changes in ${fnode?.name}. What would you like to do?`,
+        confirmText: "Save & Switch",
+        cancelText: "Discard",
       });
-      // If Confirm supports extra callback; simple handling:
-      if (!ok) return; // cancel
-      // discard
+
+      if (save) {
+        // TODO: call your save routine here
+        // e.g. persist `buffer` into the project tree or disk before switching
+        // await saveActiveFile();
+      }
+      // if user chose "Discard" (save === false), just continue
     }
+
     setActiveFile(path);
   };
+
 
   // save + kb + autosave
   const save = useCallback(() => {
@@ -317,14 +323,14 @@ export default function IDE() {
     setOutput((o) => `${o}${o ? "\n" : ""}→ ${method} ${JSON.stringify(params)}\n← 200 OK\n{ "result": "stub" }\n`);
   };
 
-  const copyOutput = async () => {
-    try {
-      await navigator.clipboard.writeText(output);
-      toast({ message: "Output copied.", variant: "success" });
-    } catch {
-      toast({ message: "Copy failed.", variant: "destructive" });
-    }
-  };
+const copyOutput = async () => {
+  try {
+    await navigator.clipboard.writeText(output);
+    toast({ message: "Output copied.", variant: "success" });
+  } catch {
+    toast({ message: "Copy failed.", variant: "danger" }); 
+  }
+};
 
   const clearOutput = () => setOutput("");
 

@@ -1,3 +1,4 @@
+# src-tauri/Cargo.toml (deps already good; keep as-is)
 [package]
 name = "arkdesk"
 version = "0.1.0"
@@ -17,15 +18,16 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 parking_lot = "0.12"
-
-# enable insecure dev certs toggle:
+fs2 = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-
+dirs = "5"
 tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "process", "time", "fs"] }
-
-# tauri v2 — NO `macros` feature in v2
 tauri = { version = "2.8.4", features = ["devtools"] }
 tauri-plugin-opener = "2.2.3"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+http = "0.2"
+
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

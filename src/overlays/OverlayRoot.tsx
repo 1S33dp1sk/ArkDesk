@@ -1,5 +1,5 @@
 // src/overlays/OverlayRoot.tsx
-import React, { useState } from "react";
+import { useState } from "react";
 import { ToasterProvider, useToast } from "../ui/Toaster";
 import { ConfirmProvider, useConfirm } from "../ui/Confirm";
 import ProgressSheet from "../ui/ProgressSheet";

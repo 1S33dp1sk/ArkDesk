@@ -60,8 +60,8 @@ const lvlTone: Record<Level, string> = {
 export default function Node() {
   const [running, setRunning] = useState(false);
   const [peers, setPeers] = useState(0);
-  const [tip, setTip] = useState(128);
-  const [syncPct, setSyncPct] = useState(100);
+  const [tip, ] = useState(128);
+  const [syncPct, ] = useState(100);
   const [mempoolCount, setMempoolCount] = useState(162);
   const [cpu, setCpu] = useState(18);
   const [ram, setRam] = useState(42);

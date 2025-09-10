@@ -1,5 +1,5 @@
 // src/components/ide/JsonEditor.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import CodeEditor from "./CodeEditor";
 
 /* -------- helpers -------- */

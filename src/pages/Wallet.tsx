@@ -12,7 +12,7 @@ type TxRow = { id: string; when: string; dir: "in" | "out"; amountArk: number; p
 const cx = (...xs: Array<string | false | null | undefined>) => xs.filter(Boolean).join(" ");
 const short = (s: string, a = 6, b = 4) => (s.length <= a + b ? s : `${s.slice(0, a)}…${s.slice(-b)}`);
 const fmt = (n: number, max = 6) => n.toLocaleString(undefined, { maximumFractionDigits: max });
-const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+// const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 /* ——— icons ——— */
 const ArrowUp = (p: any) => (
@@ -218,7 +218,7 @@ export default function Wallet() {
     { id: "0x1c…44aa", when: "2h ago",  dir: "out", amountArk: 20.0, peer: "0x9d…77cc" },
   ]);
 
-  const feeLabel = ["Eco", "Standard", "Fast"][speed];
+  // const feeLabel = ["Eco", "Standard", "Fast"][speed];
   const feeGwei  = [8, 12, 18][speed];
 
   const balArk = acct.balanceArk;

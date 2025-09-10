@@ -14,6 +14,13 @@ export type EndpointStore = { active_id?: string | null; items: Record<string, E
 
 export type WatchTopic = { method: string; params?: any; every_ms?: number };
 
+/** Payload shape for "ark:rpc:update" emitted by the backend */
+export type RpcUpdate = {
+  method: string;
+  key?: string | null;
+  value: unknown;
+};
+
 /* ---------- endpoints ---------- */
 export const ArkEndpoints = {
   list: () => invoke<EndpointStore>("ark_endpoints_list"),
@@ -30,11 +37,11 @@ export const Ark = {
   setRpcBase: (base: string) => invoke<void>("ark_config_set_rpc_base", { base }),
 
   // RPC via active endpoint
-  rpc: <T = any>(method: string, params: any = {}, timeoutMs?: number) =>
+  rpc: <T = unknown>(method: string, params: any = {}, timeoutMs?: number) =>
     invoke<T>("ark_rpc", { method, params, timeout_ms: timeoutMs }),
 
   // RPC against an explicit base URL (bypasses active endpoint)
-  rpcWith: <T = any>(
+  rpcWith: <T = unknown>(
     method: string,
     params: any,
     base: string,
@@ -52,22 +59,22 @@ export const Ark = {
     }),
 
   // cache + watchers
-  cacheRead: <T = any>(method: string) => invoke<T | null>("ark_cache_read", { method }),
-  watchStart: (topics: WatchTopic[]) => invoke<void>("ark_watch_start", { topics }),
-  watchStop: () => invoke<void>("ark_watch_stop"),
+  // NOTE: our hook passes a composite key like `${method}:${key}`
+  // Ensure your Tauri command signature is `ark_cache_read(key: String)`.
+  cacheRead:   <T = unknown>(key: string)              => invoke<T | null>("ark_cache_read", { key }),
+  watchStart:  (topics: WatchTopic[])                  => invoke<void>("ark_watch_start", { topics }),
+  watchStop:   ()                                      => invoke<void>("ark_watch_stop"),
 
   // local node lifecycle
-  run: (id = "arknet", binOverride?: string) =>
-    invoke<void>("ark_run", { id, bin_override: binOverride }),
-  runKill: (id = "arknet") => invoke<void>("ark_run_kill", { id }),
-  runStatus: (id = "arknet") => invoke<string | null>("ark_run_status", { id }),
-  bootstrapFetch: (url?: string, destDir?: string) =>
-    invoke<void>("ark_bootstrap_fetch", { url, dest_dir: destDir }),
-  bootstrapBuild: (srcDir?: string) => invoke<void>("ark_bootstrap_build", { src_dir: srcDir }),
+  run:         (id = "arknet", binOverride?: string)   => invoke<void>("ark_run", { id, bin_override: binOverride }),
+  runKill:     (id = "arknet")                          => invoke<void>("ark_run_kill", { id }),
+  runStatus:   (id = "arknet")                          => invoke<string | null>("ark_run_status", { id }),
+  bootstrapFetch: (url?: string, destDir?: string)      => invoke<void>("ark_bootstrap_fetch", { url, dest_dir: destDir }),
+  bootstrapBuild: (srcDir?: string)                     => invoke<void>("ark_bootstrap_build", { src_dir: srcDir }),
 
   // events
-  onRpcUpdate: (cb: (payload: any) => void): Promise<UnlistenFn> =>
-    listen("ark:rpc:update", (e) => cb((e as any).payload)),
+  onRpcUpdate: (cb: (payload: RpcUpdate) => void): Promise<UnlistenFn> =>
+    listen("ark:rpc:update", (e) => cb((e as any).payload as RpcUpdate)),
   onRpcError: (cb: (payload: any) => void): Promise<UnlistenFn> =>
     listen("ark:rpc:error", (e) => cb((e as any).payload)),
   onProcLog: (
