@@ -17,9 +17,10 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "../resources/bin/windows/**/*",
-      "../resources/bin/macos/**/*",
-      "../resources/bin/linux/**/*"
+      "../resources/bin/windows",
+      "../resources/bin/macos",
+      "../resources/bin/linux",
+      "../resources/wheels"        
     ],
     "icon": [
       "icons/32x32.png",

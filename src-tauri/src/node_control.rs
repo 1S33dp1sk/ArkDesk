@@ -3,8 +3,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::{
   collections::HashMap,
-  env,
-  fs,
+  env, fs,
   io::{Read, Seek, SeekFrom},
   path::{Path, PathBuf},
   process::Stdio,
@@ -32,74 +31,24 @@ pub struct NodeProc { inner: Arc<Mutex<Inner>> }
 struct Inner {
   child: Option<Child>,
   tail: Vec<String>,
+  #[cfg(unix)]
+  pgid: Option<i32>,
 }
 
 #[derive(Serialize)]
-struct LogEvt {
-  ts_ms: u64,
-  stream: &'static str,
-  line: String,
-}
+struct LogEvt { ts_ms: u64, stream: &'static str, line: String }
 
 #[derive(Serialize)]
-struct StatusEvt {
-  kind: &'static str,
-  msg: String,
-  pid: Option<u32>,
-  exe: Option<String>,
-}
+struct StatusEvt { kind: &'static str, msg: String, pid: Option<u32>, exe: Option<String> }
 
-impl NodeProc {
-  pub fn new() -> Self { Self::default() }
-  fn take_child(&self) -> Option<Child> { self.inner.lock().child.take() }
-  fn set_child(&self, child: Child) { self.inner.lock().child = Some(child); }
-  pub fn clear_logs(&self) { self.inner.lock().tail.clear(); }
-  pub fn tail(&self, n: usize) -> Vec<String> {
-    let g = self.inner.lock(); let len = g.tail.len(); let start = len.saturating_sub(n); g.tail[start..].to_vec()
-  }
-  pub fn is_running(&self) -> bool {
-    let mut remove_dead = false;
-    let running = {
-      let mut g = self.inner.lock();
-      if let Some(child) = g.child.as_mut() {
-        match child.try_wait() {
-          Ok(Some(_)) => { remove_dead = true; false }
-          Ok(None)    => true,
-          Err(_)      => { remove_dead = true; false }
-        }
-      } else { false }
-    };
-    if remove_dead { self.inner.lock().child = None; }
-    running
-  }
-  pub fn pid(&self) -> Option<u32> { self.inner.lock().child.as_ref().and_then(|c| c.id()) }
-}
-
-/* ───────────────── helpers ───────────────── */
-
-#[cfg(unix)]
-fn is_exe(p: &Path) -> bool {
-  use std::os::unix::fs::PermissionsExt;
-  p.is_file() && p.metadata().ok().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-}
-#[cfg(windows)]
-fn is_exe(p: &Path) -> bool { p.is_file() }
-
-#[inline]
-fn exe(name: &str) -> String {
-  #[cfg(windows)] { format!("{name}.exe") }
-  #[cfg(not(windows))] { name.to_string() }
-}
-
-fn platform_dirs() -> &'static [&'static str] {
-  #[cfg(windows)] { &["windows"] }
-  #[cfg(target_os = "macos")] { &["darwin", "macos"] }
-  #[cfg(all(unix, not(target_os = "macos")))] { &["linux"] }
-}
+/* ───────────────── utilities ───────────────── */
 
 #[inline]
 fn now_ms() -> u64 {
-  SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+  SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis() as u64
 }
 
 fn emit_status(app: &AppHandle, kind: &'static str, msg: String, pid: Option<u32>, exe: Option<String>) {
@@ -118,6 +67,30 @@ fn push_and_emit(proc_arc: &Arc<Mutex<Inner>>, app: &AppHandle, stream: &'static
     }
   }
   let _ = app.emit(EVT_LOG, &LogEvt { ts_ms: ts, stream, line });
+}
+
+/* ───────────────── platform helpers ───────────────── */
+
+#[cfg(unix)]
+#[inline]
+fn is_exe(p: &Path) -> bool {
+  use std::os::unix::fs::PermissionsExt;
+  p.is_file() && p.metadata().ok().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+#[cfg(windows)]
+#[inline]
+fn is_exe(p: &Path) -> bool { p.is_file() }
+
+#[inline]
+fn exe(name: &str) -> String {
+  #[cfg(windows)] { format!("{name}.exe") }
+  #[cfg(not(windows))] { name.to_string() }
+}
+
+fn platform_dirs() -> &'static [&'static str] {
+  #[cfg(windows)] { &["windows"] }
+  #[cfg(target_os = "macos")] { &["darwin", "macos"] }
+  #[cfg(all(unix, not(target_os = "macos")))] { &["linux"] }
 }
 
 /* ───────────────── arkd resolution ───────────────── */
@@ -186,7 +159,6 @@ fn spawn_file_tailer(proc_arc: Arc<Mutex<Inner>>, app: AppHandle, logs_dir: Path
   tauri::async_runtime::spawn(async move {
     let mut offsets: HashMap<PathBuf, u64> = HashMap::new();
     loop {
-      // stop when process handle is gone
       if proc_arc.lock().child.is_none() { break; }
 
       if let Ok(rd) = fs::read_dir(&logs_dir) {
@@ -194,9 +166,7 @@ fn spawn_file_tailer(proc_arc: Arc<Mutex<Inner>>, app: AppHandle, logs_dir: Path
           let path = entry.path();
           if !path.is_file() { continue; }
           let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-          if !(fname.ends_with(".log") || fname.eq_ignore_ascii_case("arkd.out") || fname.eq_ignore_ascii_case("arkd.log")) {
-            continue;
-          }
+          if !(fname.ends_with(".log") || fname.eq_ignore_ascii_case("arkd.out") || fname.eq_ignore_ascii_case("arkd.log")) { continue; }
 
           if let Ok(meta) = fs::metadata(&path) {
             let len = meta.len();
@@ -225,47 +195,60 @@ fn spawn_file_tailer(proc_arc: Arc<Mutex<Inner>>, app: AppHandle, logs_dir: Path
   });
 }
 
-/* ───────────────── I/O readers ───────────────── */
-
-fn spawn_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
-  mut reader: R, tag: &'static str, proc_arc: Arc<Mutex<Inner>>, app: AppHandle,
-) {
-  tauri::async_runtime::spawn(async move {
-    let mut lines = BufReader::new(&mut reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-      push_and_emit(&proc_arc, &app, tag, line);
-    }
-  });
-}
-
 /* ───────────────── start/stop impl ───────────────── */
 
 async fn start_impl(app: AppHandle, proc: &NodeProc, args: Option<Vec<String>>) -> Result<(), String> {
-  if proc.is_running() { return Ok(()); }
+  if proc.inner.lock().child.is_some() { return Ok(()); }
 
   emit_status(&app, "starting", "starting arkd".into(), None, None);
   push_and_emit(&proc.inner, &app, "sys", "starting arkd".to_string());
 
-  let exe_path = match resolve_arkd_path(Some(&app)) {
-    Some(p) => p,
-    None => {
-      let msg = "arkd not found. Run installer or set ARK_ARKD/ARK_HOME, or ensure it’s on PATH.".to_string();
-      emit_status(&app, "error", msg.clone(), None, None);
-      push_and_emit(&proc.inner, &app, "sys", msg.clone());
-      return Err(msg);
-    }
-  };
-
-  let mut cmd = Command::new(&exe_path);
-  if let Some(a) = args.as_ref() { cmd.args(a); }
-  cmd.current_dir(ark_home()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-
-  let mut child = cmd.spawn().map_err(|e| {
-    let msg = format!("spawn arkd failed: {e}");
-    emit_status(&app, "error", msg.clone(), None, Some(exe_path.to_string_lossy().to_string()));
+  let exe_path = resolve_arkd_path(Some(&app)).ok_or_else(|| {
+    let msg = "arkd not found. Run installer or set ARK_ARKD/ARK_HOME, or ensure it’s on PATH.".to_string();
+    emit_status(&app, "error", msg.clone(), None, None);
     push_and_emit(&proc.inner, &app, "sys", msg.clone());
     msg
   })?;
+
+  #[cfg(windows)]
+  let mut child = {
+    use std::process::Command as StdCommand;
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+    let mut scmd = StdCommand::new(&exe_path);
+    if let Some(a) = args.as_ref() { scmd.args(a); }
+    scmd.current_dir(ark_home())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NEW_PROCESS_GROUP);
+
+    let mut cmd = Command::from(scmd);
+    cmd.spawn().map_err(|e| format!("spawn arkd failed: {e}"))?
+  };
+
+  #[cfg(not(windows))]
+  let mut child = {
+    let mut cmd = Command::new(&exe_path);
+    if let Some(a) = args.as_ref() { cmd.args(a); }
+    cmd.current_dir(ark_home())
+       .stdin(Stdio::null())
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    {
+      use std::os::unix::process::CommandExt;
+      unsafe {
+        cmd.pre_exec(|| {
+          if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); }
+          Ok(())
+        });
+      }
+    }
+    cmd.spawn().map_err(|e| format!("spawn arkd failed: {e}"))?
+  };
 
   let pid = child.id();
   let exe_s = exe_path.to_string_lossy().to_string();
@@ -276,7 +259,11 @@ async fn start_impl(app: AppHandle, proc: &NodeProc, args: Option<Vec<String>>) 
   let stderr = child.stderr.take();
 
   let proc_arc = proc.inner.clone();
-  proc.set_child(child);
+  {
+    let mut g = proc_arc.lock();
+    #[cfg(unix)] { g.pgid = pid.map(|p| p as i32); }
+    g.child = Some(child);
+  }
 
   let (tx, mut rx) = mpsc::unbounded_channel::<(&'static str, String)>();
   if let Some(out) = stdout {
@@ -300,7 +287,6 @@ async fn start_impl(app: AppHandle, proc: &NodeProc, args: Option<Vec<String>>) 
     }
   });
 
-  // tail files from logs dir as fallback
   let logs_dir = ark_home().join("logs");
   if logs_dir.is_dir() {
     spawn_file_tailer(proc.inner.clone(), app.clone(), logs_dir);
@@ -309,15 +295,83 @@ async fn start_impl(app: AppHandle, proc: &NodeProc, args: Option<Vec<String>>) 
   Ok(())
 }
 
+#[cfg(unix)]
+fn kill_pgroup(pgid: i32, sig: i32) -> std::io::Result<()> {
+  let r = unsafe { libc::kill(-pgid, sig) };
+  if r == 0 { Ok(()) } else {
+    let e = std::io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(e) }
+  }
+}
+
+#[cfg(windows)]
+async fn kill_tree_windows(pid: u32) {
+  let _ = Command::new("taskkill")
+    .args(["/PID", &pid.to_string(), "/T", "/F"])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .await;
+}
+
 async fn stop_impl(proc: &NodeProc, app: Option<&AppHandle>) -> Result<(), String> {
-  if let Some(mut child) = proc.take_child() {
-    let pid = child.id();
-    let _ = child.kill();
-    let _ = timeout(Duration::from_secs(3), child.wait()).await;
-    if let Some(app) = app {
-      emit_status(app, "stopped", format!("arkd stopped pid={:?}", pid), pid, None);
-      push_and_emit(&proc.inner, app, "sys", format!("stopped pid={:?}", pid));
+  #[cfg(unix)]
+  let (mut child, pid, pgid_opt) = {
+    let mut g = proc.inner.lock();
+    match (g.child.take(), g.pgid.take()) {
+      (Some(c), pg) => {
+        let pid = c.id();
+        (c, pid, pg)
+      }
+      (None, _) => return Ok(()),
     }
+  };
+
+  #[cfg(windows)]
+  let (mut child, pid_opt) = {
+    let mut g = proc.inner.lock();
+    match g.child.take() {
+      Some(c) => {
+        let pid = c.id();
+        (c, pid)
+      }
+      None => return Ok(()),
+    }
+  };
+
+  #[cfg(unix)]
+  {
+    if let Some(pgid) = pgid_opt {
+      let _ = kill_pgroup(pgid, libc::SIGTERM);
+      let waited = timeout(Duration::from_secs(3), child.wait()).await.is_ok();
+      if !waited {
+        let _ = kill_pgroup(pgid, libc::SIGKILL);
+        let _ = timeout(Duration::from_secs(2), child.wait()).await;
+      }
+    } else {
+      let _ = child.kill().await;
+      let _ = timeout(Duration::from_secs(2), child.wait()).await;
+    }
+  }
+
+  #[cfg(windows)]
+  {
+    if let Some(pid) = pid_opt {
+      kill_tree_windows(pid).await;
+    }
+    let _ = timeout(Duration::from_secs(2), child.wait()).await;
+  }
+
+  #[cfg(unix)]
+  let pid_for_evt = pid;
+
+  #[cfg(windows)]
+  let pid_for_evt = pid_opt;
+
+  if let Some(app) = app {
+    emit_status(app, "stopped", format!("arkd stopped pid={pid_for_evt:?}"), pid_for_evt, None);
+    push_and_emit(&proc.inner, app, "sys", format!("stopped pid={pid_for_evt:?}"));
   }
   Ok(())
 }
@@ -325,21 +379,46 @@ async fn stop_impl(proc: &NodeProc, app: Option<&AppHandle>) -> Result<(), Strin
 /* ───────────────── tauri commands ───────────────── */
 
 #[tauri::command]
-pub fn node_is_running(proc: State<'_, NodeProc>) -> bool { proc.is_running() }
-
-#[tauri::command]
-pub fn node_pid(proc: State<'_, NodeProc>) -> Option<u32> { proc.pid() }
-
-#[tauri::command]
-pub fn node_exec_path(app: AppHandle) -> Option<String> {
-  resolve_arkd_path(Some(&app)).and_then(|p| p.canonicalize().ok()).map(|p| p.to_string_lossy().to_string())
+pub fn node_is_running(proc: State<'_, NodeProc>) -> bool {
+  let mut remove_dead = false;
+  let running = {
+    let mut g = proc.inner.lock();
+    if let Some(child) = g.child.as_mut() {
+      match child.try_wait() {
+        Ok(Some(_)) => { remove_dead = true; false }
+        Ok(None)    => true,
+        Err(_)      => { remove_dead = true; false }
+      }
+    } else { false }
+  };
+  if remove_dead { proc.inner.lock().child = None; }
+  running
 }
 
 #[tauri::command]
-pub fn node_log_tail(proc: State<'_, NodeProc>, n: Option<usize>) -> Vec<String> { proc.tail(n.unwrap_or(200)) }
+pub fn node_pid(proc: State<'_, NodeProc>) -> Option<u32> {
+  proc.inner.lock().child.as_ref().and_then(|c| c.id())
+}
 
 #[tauri::command]
-pub fn node_log_clear(proc: State<'_, NodeProc>) { proc.clear_logs(); }
+pub fn node_exec_path(app: AppHandle) -> Option<String> {
+  resolve_arkd_path(Some(&app))
+    .and_then(|p| p.canonicalize().ok())
+    .map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn node_log_tail(proc: State<'_, NodeProc>, n: Option<usize>) -> Vec<String> {
+  let g = proc.inner.lock();
+  let len = g.tail.len();
+  let start = len.saturating_sub(n.unwrap_or(200));
+  g.tail[start..].to_vec()
+}
+
+#[tauri::command]
+pub fn node_log_clear(proc: State<'_, NodeProc>) {
+  proc.inner.lock().tail.clear();
+}
 
 #[derive(Serialize)]
 pub struct StartOk { started: bool }

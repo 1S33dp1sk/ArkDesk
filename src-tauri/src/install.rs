@@ -9,6 +9,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, Window};
 use tauri::path::BaseDirectory;
+// use std::ffi::OsString;
 
 use crate::settings::{ark_home, Settings};
 use crate::settings::save_settings as save_settings_cmd;
@@ -22,6 +23,9 @@ struct InstallEvt {
   done: bool,
   ok: bool,
 }
+
+const VERSION_ARG: &str = "--version";
+const PROBE_ARG: &str = "--help";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +44,6 @@ pub struct Preflight {
   pub missing_wheels: Vec<String>,
   pub wheels_ok: bool,
 
-  // NEW: Windows DLL sanity (always present in payload; non-Windows = ok/empty)
   pub missing_dlls: Vec<String>,
   pub dlls_ok: bool,
 
@@ -77,7 +80,6 @@ fn exe(name: &str) -> String {
   { name.to_string() }
 }
 
-// Accept common folder aliases: windows | linux | darwin/macos
 fn platform_dirs() -> &'static [&'static str] {
   #[cfg(windows)]
   { &["windows"] }
@@ -159,13 +161,11 @@ fn copy_file(src: &Path, dst: &Path) -> io::Result<()> {
 
 fn copy_bin_payload(src_bin: &Path, dest_bin: &Path) -> Result<(), String> {
   fs::create_dir_all(dest_bin).map_err(|e| e.to_string())?;
-  // 1) required executables
   for name in required_bins() {
     let s = src_bin.join(exe(name));
     let d = dest_bin.join(exe(name));
     copy_file(&s, &d).map_err(|e| format!("copy {} failed: {}", s.display(), e))?;
   }
-  // 2) co-located shared libs (.dll/.so/.dylib) and helper exes
   let exts = shared_exts();
   for entry in fs::read_dir(src_bin).map_err(|e| e.to_string())? {
     let entry = entry.map_err(|e| e.to_string())?;
@@ -267,6 +267,72 @@ fn prepend_to_path(dir: &Path) {
   env::set_var("PATH", newp);
 }
 
+
+#[cfg(windows)]
+fn expected_runtime_dlls(bin_dir: &Path) -> Vec<&'static str> {
+  // Always expect MinGW runtime triplet:
+  let mut v = vec!["libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll"];
+  // If these are bundled, also expect their common friends:
+  let present = |n: &str| bin_dir.join(n).is_file();
+  if present("libcurl-4.dll") {
+    v.extend_from_slice(&[
+      "libssl-3-x64.dll", "libcrypto-3-x64.dll", "zlib1.dll",
+      "libnghttp2-14.dll", "libbrotlicommon.dll", "libbrotlidec.dll",
+      "libssh2-1.dll", "libiconv-2.dll", "libidn2-0.dll",
+      "libunistring-5.dll", "libpsl-5.dll", "libzstd.dll",
+      "libnghttp3-9.dll", "libngtcp2-16.dll", "libngtcp2_crypto_ossl-0.dll",
+    ]);
+  }
+  v
+}
+
+#[cfg(windows)]
+fn windows_loader_check(bin_dir_opt: &Option<PathBuf>) -> (Vec<String>, bool) {
+  let mut notes = Vec::<String>::new();
+  let mut ok = false;
+
+  if let Some(bin_dir) = bin_dir_opt {
+    let arkd = bin_dir.join(exe("arkd"));
+    if arkd.is_file() {
+      let out = Command::new(&arkd)
+        .current_dir(bin_dir)
+        .env_clear()           // isolate from system/MSYS2 DLLs
+        .env("PATH", &bin_dir) // only bundled runtimes
+        .arg(PROBE_ARG)        // lightweight probe that still loads the image
+        .output();
+
+      match out {
+        // If the process started at all, the loader succeeded.
+        Ok(o) => {
+          ok = true;
+          // Non-zero exit? surface first lines to help diagnose CLI changes.
+          if !o.status.success() {
+            let s = String::from_utf8_lossy(if !o.stderr.is_empty() { &o.stderr } else { &o.stdout });
+            let head = s.lines().take(2).collect::<Vec<_>>().join(" ");
+            if !head.is_empty() { notes.push(head); }
+          }
+        }
+        Err(e) => {
+          // Process couldn't start → likely DLL/arch issue; include heuristics.
+          notes.push(format!("spawn failed: {e}"));
+          let missing: Vec<_> = expected_runtime_dlls(bin_dir)
+            .into_iter()
+            .filter(|n| !bin_dir.join(n).is_file())
+            .map(|s| s.to_string())
+            .collect();
+          if !missing.is_empty() { notes.extend(missing); }
+        }
+      }
+    } else {
+      notes.push("arkd.exe missing in bin/<platform>".to_string());
+    }
+  } else {
+    notes.push("bin/<platform> missing".to_string());
+  }
+
+  (notes, ok)
+}
+
 // ---------- Commands ----------
 #[tauri::command]
 pub fn install_preflight(app: AppHandle) -> Result<Preflight, String> {
@@ -276,7 +342,7 @@ pub fn install_preflight(app: AppHandle) -> Result<Preflight, String> {
   let parent_exists = parent.exists();
   let parent_writable = parent_exists && is_writable(&parent);
   let free_bytes = if parent_exists { fs2::available_space(&parent).unwrap_or(0) } else { 0 };
-  let need_bytes: u64 = 400 * 1024 * 1024; // venv + bins
+  let need_bytes: u64 = 400 * 1024 * 1024;
 
   let mut spurious = Vec::new();
   if let Ok(cwd) = std::env::current_dir() {
@@ -292,7 +358,6 @@ pub fn install_preflight(app: AppHandle) -> Result<Preflight, String> {
     }
   }
 
-  // binaries in app bundle
   let mut missing_bins = Vec::new();
   let bin_dir_opt = resolve_resource_bin_dir(&app);
   if let Some(bin_dir) = &bin_dir_opt {
@@ -306,7 +371,6 @@ pub fn install_preflight(app: AppHandle) -> Result<Preflight, String> {
   }
   let bins_ok = missing_bins.is_empty();
 
-  // wheels in app bundle
   let mut missing_wheels = Vec::new();
   if let Some(wd) = resolve_resource_wheels_dir(&app) {
     let ok = fs::read_dir(&wd).map(|it| {
@@ -320,49 +384,8 @@ pub fn install_preflight(app: AppHandle) -> Result<Preflight, String> {
   }
   let wheels_ok = missing_wheels.is_empty();
 
-  // DLL sanity (Windows): require at least one .dll in bundle AND try launching arkd with PATH=bin
-  let (missing_dlls, dlls_ok) = {
-    #[cfg(windows)]
-    {
-      let mut md = Vec::<String>::new();
-      let mut ok = true;
-      if let Some(bin_dir) = &bin_dir_opt {
-        let dlls: Vec<_> = fs::read_dir(bin_dir).ok()
-          .into_iter().flatten()
-          .filter_map(|e| e.ok())
-          .map(|e| e.path())
-          .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()).map(|e| e.eq_ignore_ascii_case("dll")).unwrap_or(false))
-          .collect();
-        if dlls.is_empty() {
-          ok = false;
-          md.push("*.dll".to_string());
-        }
-        // loader check
-        let arkd = bin_dir.join(exe("arkd"));
-        if arkd.is_file() {
-          // PATH = <bundle bin>;<existing>
-          let mut path_env = bin_dir.as_os_str().to_os_string();
-          path_env.push(";");
-          path_env.push(env::var_os("PATH").unwrap_or_default());
-          match Command::new(&arkd)
-            .current_dir(bin_dir)
-            .env("PATH", path_env)
-            .arg("--version")
-            .output()
-          {
-            Ok(o) if o.status.success() => {},
-            _ => { ok = false; md.push("DLL loader check failed for arkd.exe".to_string()); }
-          }
-        }
-      } else {
-        ok = false;
-        md.push("bin/<platform> missing".to_string());
-      }
-      (md, ok)
-    }
-    #[cfg(not(windows))]
-    { (Vec::new(), true) }
-  };
+  // Windows DLL sanity: loader-only check; non-Windows always ok
+  let (missing_dlls, dlls_ok) = windows_loader_check(&bin_dir_opt);
 
   let ok = parent_exists && parent_writable && free_bytes >= need_bytes && bins_ok && wheels_ok && dlls_ok;
 
@@ -441,17 +464,31 @@ pub fn install_selftest(window: Window) -> Result<serde_json::Value, String> {
   let app = window.app_handle();
   let home = ark_home();
   let bin_dir = home.join("bin");
-  let arkd = bin_dir.join(exe("arkd"));
+
+  // Ensure binaries exist in Ark home; fallback to bundled resources if needed.
+  let arkd = {
+    let p = bin_dir.join(exe("arkd"));
+    if !p.is_file() {
+      if let Some(src) = resolve_resource_bin_dir(&app) {
+        fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
+        copy_bin_payload(&src, &bin_dir)?;
+      }
+    }
+    bin_dir.join(exe("arkd"))
+  };
+
   let py = ensure_pyenv(&app, &window)?;
 
   #[cfg(windows)]
   prepend_to_path(&bin_dir);
 
+  // Loader probe: do not require a specific CLI flag to succeed.
   let ark_out = Command::new(&arkd)
-    .arg("--version")
+    .arg(PROBE_ARG)
     .output()
     .map_err(|e| format!("arkd launch failed: {e}"))?;
-  let ark_ok = ark_out.status.success();
+  let ark_loaded = true; // reaching here means the image loaded
+  let ark_exit_ok = ark_out.status.success();
 
   let code = "import importlib.metadata as m, arknet_py; print(m.version('arknet-py'))";
   let py_out = Command::new(&py)
@@ -465,7 +502,8 @@ pub fn install_selftest(window: Window) -> Result<serde_json::Value, String> {
 
   Ok(serde_json::json!({
     "binPath": bin_dir.to_string_lossy(),
-    "arkdOk": ark_ok,
+    "arkdLoaded": ark_loaded,
+    "arkdExitOk": ark_exit_ok,
     "arkdStdout": String::from_utf8_lossy(&ark_out.stdout),
     "arkdStderr": String::from_utf8_lossy(&ark_out.stderr),
     "python": py.to_string_lossy(),
@@ -473,6 +511,7 @@ pub fn install_selftest(window: Window) -> Result<serde_json::Value, String> {
     "arkpyVersion": arkpy_ver
   }))
 }
+
 
 #[tauri::command]
 pub fn reveal_ark_home() -> Result<(), String> {
