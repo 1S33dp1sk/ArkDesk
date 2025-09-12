@@ -75,10 +75,10 @@ echo
 echo "[ArknetX] make ${ARKNETX_TARGET}"
 make -C "$ARKNETX_PATH" "${ARKNETX_TARGET}"
 
-# 3) Stage outputs → ../resources/bin/<os> and mirror to src-tauri/bin
+# 3) Stage outputs → ArkDesk/resources/bin/<os> and mirror to src-tauri/bin
 BIN_SRC="$ARKNETX_PATH/build/bin/${BIN_OS}"
-RES_ROOT="$(cd "$ARKDESK/.." && pwd)/resources/bin"
-WIN_RES="$RES_ROOT/windows"   # kept for symmetry; created empty
+RES_ROOT="$ARKDESK/resources/bin"
+WIN_RES="$RES_ROOT/windows"  # created empty for consistency
 MAC_RES="$RES_ROOT/macos"
 LIN_RES="$RES_ROOT/linux"
 DEV_BIN="$ARKDESK/src-tauri/bin"
@@ -89,21 +89,20 @@ if [[ -d "$BIN_SRC" ]]; then
   echo "[bundle] source: $BIN_SRC"
   case "$OS_TAG" in
     macos)
-      # executables + dylibs
-      find "$BIN_SRC" -maxdepth 1 -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print0 \
+      # executables (+ optional dylibs with --copy-deps)
+      find "$BIN_SRC" -maxdepth 1 -type f -perm -111 -print0 \
         | xargs -0 -I{} cp -f "{}" "$MAC_RES/"
       if [[ $COPY_DEPS -eq 1 ]]; then
-        find "$BIN_SRC" -maxdepth 1 -type f -name "*.${SHLIB_EXT}" -print0 \
+        find "$BIN_SRC" -maxdepth 1 -type f -name '*.dylib' -print0 \
           | xargs -0 -I{} cp -f "{}" "$MAC_RES/"
       fi
       cp -f "$MAC_RES/"* "$DEV_BIN/" 2>/dev/null || true
       ;;
     linux)
-      # executables + .so
-      find "$BIN_SRC" -maxdepth 1 -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print0 \
+      find "$BIN_SRC" -maxdepth 1 -type f -perm -111 -print0 \
         | xargs -0 -I{} cp -f "{}" "$LIN_RES/"
       if [[ $COPY_DEPS -eq 1 ]]; then
-        find "$BIN_SRC" -maxdepth 1 -type f \( -name "*.${SHLIB_EXT}" -o -name "*.${SHLIB_EXT}.*" \) -print0 \
+        find "$BIN_SRC" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -print0 \
           | xargs -0 -I{} cp -f "{}" "$LIN_RES/"
       fi
       cp -f "$LIN_RES/"* "$DEV_BIN/" 2>/dev/null || true
@@ -113,6 +112,7 @@ if [[ -d "$BIN_SRC" ]]; then
 else
   echo "[bundle] warn: bin source not found: $BIN_SRC"
 fi
+
 
 # 4) Node/Tauri — anti-recursion (install only in npm prebuild)
 if [[ $SKIP_NODE -eq 0 ]]; then

@@ -11,9 +11,8 @@ mod manifest;
 mod admin_client;
 mod state;
 mod node_control; // process supervisor
-mod types; // centralized payloads
-mod rpc; // <-- add this
-
+mod types;        // centralized payloads
+mod rpc;          // RPC client
 
 use cleanup::{cleanup_spurious_dirs, wipe_ark_home};
 use install::{install_preflight, install_arknet_progress, reveal_ark_home, install_selftest};
@@ -26,11 +25,12 @@ use state::NodeBridge;
 use types::{ChainTip, MempoolInfo, Stale};
 
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
+/* ---- events ---- */
 const EVT_HEALTH:  &str = "node://health";
 const EVT_STATUS:  &str = "node://status";
 const EVT_TIP:     &str = "node://tip";
@@ -38,11 +38,32 @@ const EVT_MEMPOOL: &str = "node://mempool";
 const EVT_CAPS:    &str = "node://caps";
 const EVT_STALE:   &str = "node://stale";
 
+/* ---- manifest discovery ---- */
 fn default_manifest_path() -> PathBuf {
-  std::env::var("ARK_RUN_DIR")
-    .map(PathBuf::from)
-    .unwrap_or_else(|_| PathBuf::from("./var/devnet/run"))
-    .join("node.json")
+  // 1) explicit override
+  if let Ok(run_dir) = std::env::var("ARK_RUN_DIR") {
+    return PathBuf::from(run_dir).join("node.json");
+  }
+
+  // 2) Windows roaming profile (APPDATA\Arknet\var\devnet\run\node.json)
+  #[cfg(target_os = "windows")]
+  {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+      let p = Path::new(&appdata)
+        .join("Arknet").join("var").join("devnet").join("run").join("node.json");
+      if p.exists() { return p; }
+    }
+  }
+
+  // 3) POSIX-ish ARK_HOME/var/devnet/run/node.json
+  if let Ok(ark_home) = std::env::var("ARK_HOME") {
+    let p = Path::new(&ark_home)
+      .join("var").join("devnet").join("run").join("node.json");
+    if p.exists() { return p; }
+  }
+
+  // 4) project-local fallback
+  PathBuf::from("./var/devnet/run").join("node.json")
 }
 
 fn now_ms() -> u64 {
@@ -61,6 +82,7 @@ struct Stamps {
   mem_ok_ms:    AtomicU64,
 }
 
+/* ---- pollers ---- */
 async fn spawn_status_poller(app: AppHandle, bridge: NodeBridge, stamps: Arc<Stamps>) {
   use tokio::time::{sleep, Duration};
 
@@ -84,6 +106,7 @@ async fn spawn_status_poller(app: AppHandle, bridge: NodeBridge, stamps: Arc<Sta
 
 async fn spawn_rpc_poller(app: AppHandle, bridge: NodeBridge, stamps: Arc<Stamps>) {
   use tokio::time::{sleep, Duration};
+
   let mut last_tip_key: Option<(u64, Option<String>)> = None;
   let mut caps_sent = false;
 
@@ -91,6 +114,7 @@ async fn spawn_rpc_poller(app: AppHandle, bridge: NodeBridge, stamps: Arc<Stamps
     bridge.maybe_refresh();
 
     if let Ok(rpc) = bridge.rpc() {
+      // one-time capability snapshot
       if !caps_sent {
         if let Ok(list) = rpc.call::<Vec<String>, _>("rpc.list", json!({})).await {
           let _ = app.emit(EVT_CAPS, &list);
@@ -98,6 +122,7 @@ async fn spawn_rpc_poller(app: AppHandle, bridge: NodeBridge, stamps: Arc<Stamps
         }
       }
 
+      // tip (only on change)
       if let Ok(tip) = rpc.call::<ChainTip, _>("chain.tip", json!({})).await {
         let key = (tip.height, tip.block_id.clone());
         if last_tip_key.as_ref() != Some(&key) {
@@ -107,6 +132,7 @@ async fn spawn_rpc_poller(app: AppHandle, bridge: NodeBridge, stamps: Arc<Stamps
         }
       }
 
+      // mempool (steady cadence)
       if let Ok(mp) = rpc.call::<MempoolInfo, _>("mempool.info", json!({})).await {
         stamps.mem_ok_ms.store(now_ms(), Ordering::Relaxed);
         let _ = app.emit(EVT_MEMPOOL, &mp);
@@ -126,10 +152,10 @@ async fn spawn_stale_emitter(app: AppHandle, stamps: Arc<Stamps>) {
 
     let payload = Stale {
       now_ms: now,
-      admin_age_ms:  age(stamps.admin_ok_ms.load(Ordering::Relaxed)),
-      status_age_ms: age(stamps.status_ok_ms.load(Ordering::Relaxed)),
-      tip_age_ms:    age(stamps.tip_ok_ms.load(Ordering::Relaxed)),
-      mempool_age_ms:age(stamps.mem_ok_ms.load(Ordering::Relaxed)),
+      admin_age_ms:   age(stamps.admin_ok_ms.load(Ordering::Relaxed)),
+      status_age_ms:  age(stamps.status_ok_ms.load(Ordering::Relaxed)),
+      tip_age_ms:     age(stamps.tip_ok_ms.load(Ordering::Relaxed)),
+      mempool_age_ms: age(stamps.mem_ok_ms.load(Ordering::Relaxed)),
     };
     let _ = app.emit(EVT_STALE, &payload);
 
@@ -137,14 +163,17 @@ async fn spawn_stale_emitter(app: AppHandle, stamps: Arc<Stamps>) {
   }
 }
 
+/* ---- tauri bootstrap ---- */
 fn main() {
   tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     // .plugin(tauri_plugin_opener::init())
     .setup(|app| {
+      // node process supervisor
       app.manage(node_control::NodeProc::default());
 
+      // resolve manifest path & bridge
       let manifest_path = default_manifest_path();
       let bridge = NodeBridge::new(manifest_path.clone());
 
@@ -152,14 +181,27 @@ fn main() {
         bridge.update_manifest(m);
       }
 
+      // share bridge
       app.manage(bridge.clone());
 
+      // background workers
       let stamps = Arc::new(Stamps::default());
-
       let app_handle = app.handle().clone();
-      tauri::async_runtime::spawn(spawn_status_poller(app_handle.clone(), bridge.clone(), stamps.clone()));
-      tauri::async_runtime::spawn(spawn_rpc_poller(app_handle.clone(), bridge.clone(), stamps.clone()));
-      tauri::async_runtime::spawn(spawn_stale_emitter(app_handle, stamps));
+
+      tauri::async_runtime::spawn(spawn_status_poller(
+        app_handle.clone(),
+        bridge.clone(),
+        stamps.clone(),
+      ));
+      tauri::async_runtime::spawn(spawn_rpc_poller(
+        app_handle.clone(),
+        bridge.clone(),
+        stamps.clone(),
+      ));
+      tauri::async_runtime::spawn(spawn_stale_emitter(
+        app_handle,
+        stamps,
+      ));
 
       Ok(())
     })
