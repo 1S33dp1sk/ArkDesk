@@ -38,6 +38,10 @@
   /* light bg/text final */
   --bg:    #f5f7fb;
   --text:  #111216;
+  
+  --ark-aurora-1: hsl(220 95% 65% / 0.45);
+  --ark-aurora-2: hsl(270 90% 70% / 0.40);
+  --ark-grid:     hsla(0,0%,100%,0.18);
 }
 
 [data-theme="dark"]{
@@ -181,4 +185,12 @@ body { background: var(--bg); color: var(--text); @apply antialiased; }
   background-size: 40px 40px;
   animation: stripes 1s linear infinite;
   background-color: rgba(122,162,255,.35);
+}
+
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .motion-safe\:animate-float,
+  .motion-safe\:animate-beam,
+  .motion-safe\:animate-grain { animation: none !important; }
 }

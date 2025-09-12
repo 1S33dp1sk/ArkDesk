@@ -1,5 +1,5 @@
 // src/App.tsx
-import  { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import BackgroundFX from "./components/BackgroundFX";
 import { ThemeToggle } from "./theme";
@@ -7,6 +7,7 @@ import Section from "./ui/Section";
 import InstallPrompt from "./pages/InstallPrompt";
 import SettingsPage from "./pages/Settings";
 import Home from "./pages/Home";
+import World from "./pages/World";
 
 type Probe = {
   home: string;
@@ -15,10 +16,13 @@ type Probe = {
   missing: string[];
 };
 
-type Route = "home" | "settings";
+type Route = "home" | "world" | "settings";
 
 function currentRoute(): Route {
-  return location.hash === "#settings" ? "settings" : "home";
+  const h = (location.hash || "").toLowerCase();
+  if (h === "#settings") return "settings";
+  if (h === "#world") return "world";
+  return "home";
 }
 
 export default function App() {
@@ -26,16 +30,19 @@ export default function App() {
   const [err, setErr] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(currentRoute());
 
+  const go = (r: Route) => {
+    setRoute(r); // state-first so UI updates even if hashchange is swallowed
+    const target = r === "home" ? "#home" : r === "world" ? "#world" : "#settings";
+    if ((location.hash || "").toLowerCase() !== target) location.hash = target;
+  };
+
   const runProbe = async () => {
     try {
       setErr(null);
       const p = await invoke<Probe>("probe_install");
       setProbe(p);
-      // If we just finished installing, default to the overview
-      if (p.initialized && currentRoute() !== "settings") {
-        location.hash = "#home";
-        setRoute("home");
-      }
+      // Respect current hash; do not auto-redirect
+      setRoute(currentRoute());
     } catch (e: any) {
       setErr(String(e));
       setProbe(null);
@@ -43,16 +50,12 @@ export default function App() {
   };
 
   useEffect(() => {
-    // default theme on first load
     const root = document.documentElement;
     if (!root.dataset.theme) {
       root.dataset.theme = "dark";
       try { localStorage.setItem("arknet.theme", "dark"); } catch {}
     }
-    // initial probe
     runProbe();
-
-    // hash router
     const onHash = () => setRoute(currentRoute());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -60,26 +63,14 @@ export default function App() {
 
   const nav = useMemo(() => {
     if (!probe?.initialized) return null;
+    const base = "px-3 py-1.5 rounded-md text-[13px] border";
+    const active = "bg-white/10 border-border";
+    const idle = "border-transparent hover:bg-white/5";
     return (
       <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-white/5 p-1">
-        <a
-          href="#home"
-          className={[
-            "px-3 py-1.5 rounded-md text-[13px]",
-            route === "home" ? "bg-white/10 border border-border" : "hover:bg-white/5",
-          ].join(" ")}
-        >
-          Overview
-        </a>
-        <a
-          href="#settings"
-          className={[
-            "px-3 py-1.5 rounded-md text-[13px]",
-            route === "settings" ? "bg-white/10 border border-border" : "hover:bg-white/5",
-          ].join(" ")}
-        >
-          Settings
-        </a>
+        <button onClick={() => go("home")} className={[base, route === "home" ? active : idle].join(" ")}>Overview</button>
+        <button onClick={() => go("world")} className={[base, route === "world" ? active : idle].join(" ")}>World</button>
+        <button onClick={() => go("settings")} className={[base, route === "settings" ? active : idle].join(" ")}>Settings</button>
       </div>
     );
   }, [probe?.initialized, route]);
@@ -99,13 +90,11 @@ export default function App() {
         {!probe ? (
           <div className="p-6 max-w-xl mx-auto">
             <Section title="Checking environment…" variant="card" surface={2} padding="lg" headerPadding="md">
-              <div className="text-sm text-white/70">
-                {err ?? "Probing Arknet directories…"}
-              </div>
+              <div className="text-sm text-white/70">{err ?? "Probing Arknet directories…"}</div>
             </Section>
           </div>
         ) : probe.initialized ? (
-          route === "settings" ? <SettingsPage /> : <Home />
+          route === "settings" ? <SettingsPage /> : route === "world" ? <World /> : <Home />
         ) : (
           <InstallPrompt home={probe.home} missing={probe.missing} onInstalled={runProbe} />
         )}

@@ -20,7 +20,7 @@ type Preflight = {
   binsOk: boolean;
   missingWheels: string[];
   wheelsOk: boolean;
-  // Windows-only (present but harmless on other platforms)
+  // Windows-only (present but harmless elsewhere)
   missingDlls: string[];
   dllsOk: boolean;
   ok: boolean;
@@ -81,10 +81,22 @@ export default function InstallPrompt({
     { pct: 0, label: "", active: false, done: false, visible: false }
   );
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const lastDllsOk = useRef<boolean | null>(null);
 
   useEffect(() => { setProbe({ home, present: false, initialized: false, missing }); }, [home, missing]);
   useEffect(() => { runPreflight(); }, []);
   useEffect(() => () => { if (unlistenRef.current) { unlistenRef.current(); unlistenRef.current = null; } }, []);
+
+  // If DLL loader fails, auto-run selftest once to surface stderr immediately.
+  useEffect(() => {
+    if (!preflight) return;
+    if (preflight.dllsOk === false && lastDllsOk.current !== false) {
+      lastDllsOk.current = false;
+      runSelftest().catch(() => {});
+    } else {
+      lastDllsOk.current = preflight.dllsOk;
+    }
+  }, [preflight]);
 
   const appendLog = (lines: string | string[]) =>
     setLog((prev) => (prev ? prev + "\n\n" : "") + (Array.isArray(lines) ? lines.join("\n") : lines));
@@ -156,10 +168,21 @@ export default function InstallPrompt({
   };
 
   const reveal = async () => { try { await invoke("reveal_ark_home"); } catch (e: any) { appendLog(String(e)); } };
-  const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); } catch {}; };
+  const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); } catch {} };
   const clearLog = () => setLog("");
 
-  const installDisabled = busy || (preflight ? !preflight.ok : true);
+  // UI gating ignores DLL loader result; we only warn for it.
+  const uiOk =
+    preflight
+      ? (preflight.parentExists &&
+         preflight.parentWritable &&
+         preflight.freeBytes >= preflight.needBytes &&
+         preflight.binsOk &&
+         preflight.wheelsOk)
+      : false;
+
+  const installDisabled = busy || !uiOk;
+
   const disabledReason = (() => {
     if (!preflight) return "";
     const reasons: string[] = [];
@@ -168,7 +191,6 @@ export default function InstallPrompt({
     if (preflight.freeBytes < preflight.needBytes) reasons.push(`need ≥ ${formatBytes(preflight.needBytes)} free (have ${formatBytes(preflight.freeBytes)})`);
     if (!preflight.binsOk) reasons.push(`binaries missing: ${preflight.missingBins?.length ? preflight.missingBins.join(", ") : "unknown"}`);
     if (!preflight.wheelsOk) reasons.push(`wheels missing: ${preflight.missingWheels?.length ? preflight.missingWheels.join(", ") : "unknown"}`);
-    if (preflight.dllsOk === false) reasons.push(`DLL issues: ${preflight.missingDlls?.length ? preflight.missingDlls.join(", ") : "loader check failed"}`);
     return reasons.join("; ");
   })();
 
@@ -232,7 +254,7 @@ export default function InstallPrompt({
                     <Chip ok={preflight.spurious.length === 0} label={preflight.spurious.length ? "Spurious detected" : "No spurious"} />
                     <Chip ok={preflight.binsOk} label={preflight.binsOk ? "Binaries bundled" : "Binaries missing"} />
                     <Chip ok={preflight.wheelsOk} label={preflight.wheelsOk ? "Wheels present" : "Wheels missing"} />
-                    {"dllsOk" in preflight && <Chip ok={preflight.dllsOk} label={preflight.dllsOk ? "DLLs present" : "DLLs missing/loader"} />}
+                    {"dllsOk" in preflight && <Chip ok={preflight.dllsOk} label={preflight.dllsOk ? "Loader OK" : "Loader failed"} />}
                     {selftest && (
                       <>
                         <Chip ok={selftest.arkdOk} label="arkd loads" />
@@ -274,14 +296,18 @@ export default function InstallPrompt({
                   </details>
                 ) : null}
 
-                {/* Missing DLLs (Windows) */}
-                {preflight && preflight.dllsOk === false && preflight.missingDlls?.length ? (
+                {/* DLL issues (Windows) */}
+                {preflight && preflight.dllsOk === false ? (
                   <details className="mt-3 group open:animate-fade-in">
                     <summary className="cursor-pointer text-[12px] text-white/70 select-none">DLL issues</summary>
                     <ul className="mt-1 list-disc pl-5 text-[12px] text-white/80 break-all">
-                      {preflight.missingDlls.map((m) => (<li key={m}>{m}</li>))}
+                      {preflight.missingDlls?.length
+                        ? preflight.missingDlls.map((m) => (<li key={m}>{m}</li>))
+                        : (<li>Loader check failed. Run <b>Self-test</b> for exact error (stderr).</li>)}
                     </ul>
-                    <div className="mt-1 text-[11px] text-white/55">Bundle the required <code>.dll</code> files beside the binaries in <code>resources/bin/windows/</code>.</div>
+                    <div className="mt-1 text-[11px] text-white/55">
+                      Ensure required <code>.dll</code> files are beside the binaries in <code>resources/bin/windows/</code>.
+                    </div>
                   </details>
                 ) : null}
 
