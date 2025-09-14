@@ -1,7 +1,7 @@
 // src/hooks/useNode.ts
 import { useEffect, useRef, useState } from "react";
 import type {
-  AdminHealthz, AdminStatus, ChainTip, MempoolInfo, Caps, Stale, BlockItem
+  AdminHealthz, AdminStatus, ChainTip, MempoolInfo, Caps, Stale
 } from "../services/nodeBus";
 import {
   EVT_HEALTH, EVT_STATUS, EVT_TIP, EVT_MEMPOOL, EVT_CAPS, EVT_STALE, onEvent
@@ -44,7 +44,6 @@ function push<T>(arr: T[], v: T, cap: number) {
   return out;
 }
 
-/* Keep a numeric history with cap; update when value changes */
 export function useHistory(value: number | undefined, cap = 90) {
   const [hist, setHist] = useState<number[]>(Array(cap).fill(0));
   useEffect(() => {
@@ -54,18 +53,47 @@ export function useHistory(value: number | undefined, cap = 90) {
   return hist;
 }
 
-/* Blocks feed derived from tips; mempool count from mempool info */
-export function useBlocksAndMempool(capBlocks = 64) {
+/* Keep a single, monotonic height from both sources */
+export function useStableHeight() {
   const { data: tip } = useTip();
-  const { data: mp }  = useMempool();
+  const { data: status } = useStatus();
+  const last = useRef<number>(0);
+  const [height, setHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    const candidates = [
+      Number(tip?.height ?? 0),
+      Number(status?.networkHeight ?? 0),
+    ].filter(n => Number.isFinite(n) && n > 0);
+
+    if (!candidates.length) return;
+    const next = Math.max(...candidates);
+    if (next >= last.current) {
+      last.current = next;
+      setHeight(next);
+    }
+    // else: drop regressive samples
+  }, [tip?.height, status?.networkHeight]);
+
+  return height;
+}
+
+/* Blocks feed derived from stable height; mempool from mempool info */
+type BlockItem = { height: number; ts: number };
+export function useBlocksAndMempool(capBlocks = 64) {
+  const stableHeight = useStableHeight();
+  const { data: mp } = useMempool();
+
   const [blocks, setBlocks] = useState<BlockItem[]>([]);
   const lastHeight = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    if (!tip?.height) return;
-    const h = tip.height;
+    const h = Number(stableHeight ?? 0);
+    if (!Number.isFinite(h) || h <= 0) return;
+
     const prev = lastHeight.current;
     if (prev == null) { lastHeight.current = h; return; }
+
     if (h > prev) {
       const ts = Date.now();
       const add: BlockItem[] = [];
@@ -76,13 +104,13 @@ export function useBlocksAndMempool(capBlocks = 64) {
       });
       lastHeight.current = h;
     }
-  }, [tip, capBlocks]);
+  }, [stableHeight, capBlocks]);
 
-  const mempool = Math.max(0, Number(mp?.txs ?? 0));
-  return { blocks, mempool };
+  const mempool = Math.max(0, Number(mp?.txs ?? mp?.size ?? 0));
+  return { blocks, mempool, height: stableHeight };
 }
 
-/* Peer & TPS histories derived from status/mempool/blocks */
+/* Peer & TPS histories */
 export function usePeerHistory(cap = 90) {
   const { data: status } = useStatus();
   return useHistory(status?.peers ?? 0, cap);
@@ -92,28 +120,42 @@ export function useTpsHistory(cap = 90) {
   const { data: status } = useStatus();
   const { data: mp } = useMempool();
   const peers = Number(status?.peers ?? 0);
-  const mem = Math.max(0, Number(mp?.txs ?? 0));
-  // Lightweight heuristic: base + peers factor + mempool pressure
+  const mem = Math.max(0, Number(mp?.txs ?? mp?.size ?? 0));
   const tps = 2 + peers * 0.08 + Math.min(6, mem / 40);
   return useHistory(tps, cap);
 }
 
-/* Aggregated snapshot for pages that want a single hook */
-export function useNodeSnapshot() {
-  const health  = useHealth();
-  const status  = useStatus();
-  const tip     = useTip();
-  const mempool = useMempool();
-  const stale   = useStale();
-  const caps    = useCaps();
+/* Display role: prefer producerOn -> miner/relay */
+export function useDisplayRole(): "relay" | "miner" | undefined {
+  const { data: status } = useStatus();
+  if (!status) return undefined;
+  return status.producerOn ? "miner" : "relay";
+}
 
-  const { blocks, mempool: memCount } = useBlocksAndMempool();
+/* Aggregated snapshot with plain values */
+export function useNodeSnapshot() {
+  const hEvt  = useHealth();
+  const sEvt  = useStatus();
+  const tEvt  = useTip();
+  // const mEvt  = useMempool();
+  const stale = useStale();
+  const caps  = useCaps();
+
+  const { blocks, mempool, height } = useBlocksAndMempool();
   const peerHist = usePeerHistory();
   const tpsHist  = useTpsHistory();
+  const role     = useDisplayRole();
 
   return {
-    health, status, tip, mempool, stale, caps,
-    blocks, memCount, peerHist, tpsHist,
-    ready: health.ready && status.ready && tip.ready,
+    health: hEvt.data,
+    status: sEvt.data,
+    tip: tEvt.data,
+    mempool: mempool,
+    tipHeight: height ?? null,
+    role,
+    blocks, peerHist, tpsHist,
+    stale: stale.data,
+    caps: caps.data,
+    ready: !!(hEvt.data && sEvt.data && height),
   };
 }

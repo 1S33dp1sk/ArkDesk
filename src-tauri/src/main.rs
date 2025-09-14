@@ -24,11 +24,11 @@ use manifest::read_manifest;
 use state::NodeBridge;
 use types::{ChainTip, MempoolInfo, Stale};
 
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /* ---- events ---- */
 const EVT_HEALTH:  &str = "node://health";
@@ -163,6 +163,37 @@ async fn spawn_stale_emitter(app: AppHandle, stamps: Arc<Stamps>) {
   }
 }
 
+/* ---- generic RPC passthrough used by UI ---- */
+
+#[tauri::command]
+async fn rpc_call(
+  bridge: State<'_, state::NodeBridge>,
+  method: String,
+  params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+  // Ensure we’re using the freshest endpoint/headers
+  bridge.maybe_refresh();
+
+  let rpc = bridge.rpc().map_err(|e| e.to_string())?;
+  // Return full chain of errors for proper diagnostics
+  let out = rpc
+    .call_value(&method, params)
+    .await
+    .map_err(|e| format!("{:?}", e))?;
+
+  Ok(out.result.unwrap_or(out.raw))
+}
+
+#[tauri::command]
+async fn rpc_tx_lookup(state: State<'_, NodeBridge>, id: String) -> Result<Value, String> {
+  let rpc = state.rpc().map_err(|e| e.to_string())?;
+  let v: Value = rpc
+    .call("tx.get", json!({ "id": id }))
+    .await
+    .map_err(|e| e.to_string())?;
+  Ok(json!({ "raw": v, "id": id }))
+}
+
 /* ---- tauri bootstrap ---- */
 fn main() {
   tauri::Builder::default()
@@ -228,6 +259,9 @@ fn main() {
       node_control::node_start,
       node_control::node_stop,
       node_control::node_restart,
+      // rpc passthroughs
+      rpc_call,
+      rpc_tx_lookup,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

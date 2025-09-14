@@ -376,28 +376,196 @@ async fn stop_impl(proc: &NodeProc, app: Option<&AppHandle>) -> Result<(), Strin
   Ok(())
 }
 
-/* ───────────────── tauri commands ───────────────── */
+/* ───────────────── external probe (port / process name) ───────────────── */
 
-#[tauri::command]
-pub fn node_is_running(proc: State<'_, NodeProc>) -> bool {
+fn rpc_ports_to_probe() -> Vec<u16> {
+  if let Ok(v) = env::var("ARK_RPC_PORT") {
+    if let Ok(p) = v.parse::<u16>() { return vec![p]; }
+  }
+  vec![8645] // default
+}
+
+async fn run_cmd_with_timeout(mut cmd: Command, ms: u64) -> Option<String> {
+  match timeout(Duration::from_millis(ms), cmd.output()).await.ok()? {
+    Ok(out) if out.status.success() => {
+      Some(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+    _ => None,
+  }
+}
+
+#[cfg(windows)]
+async fn pid_listening_on(port: u16) -> Option<u32> {
+  let mut cmd = Command::new("cmd");
+  cmd.args(["/C", "netstat -ano -p tcp"]);
+  let out = run_cmd_with_timeout(cmd, 1200).await?;
+  for line in out.lines() {
+    if line.contains(&format!(":{port}")) && line.to_ascii_lowercase().contains("listen") {
+      if let Some(pid_str) = line.split_whitespace().last() {
+        if let Ok(pid) = pid_str.parse::<u32>() { return Some(pid); }
+      }
+    }
+  }
+  None
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+async fn pid_listening_on(port: u16) -> Option<u32> {
+  // Prefer ss; fallback to lsof.
+  let mut cmd = Command::new("sh");
+  cmd.args(["-lc", &format!("command -v ss >/dev/null 2>&1 && ss -ltnp 'sport = :{port}' || true")]);
+  if let Some(out) = run_cmd_with_timeout(cmd, 1200).await {
+    for line in out.lines() {
+      if let Some(p) = line.find("pid=") {
+        let rest = &line[p + 4..];
+        let id: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(pid) = id.parse::<u32>() { return Some(pid); }
+      }
+    }
+  }
+  let mut cmd2 = Command::new("sh");
+  cmd2.args(["-lc", &format!("lsof -nP -iTCP:{port} -sTCP:LISTEN -t 2>/dev/null")]);
+  if let Some(out) = run_cmd_with_timeout(cmd2, 1200).await {
+    for line in out.lines() {
+      if let Ok(pid) = line.trim().parse::<u32>() { return Some(pid); }
+    }
+  }
+  None
+}
+
+#[cfg(target_os = "macos")]
+async fn pid_listening_on(port: u16) -> Option<u32> {
+  let mut cmd = Command::new("sh");
+  cmd.args(["-lc", &format!("lsof -nP -iTCP:{port} -sTCP:LISTEN -t 2>/dev/null")]);
+  let out = run_cmd_with_timeout(cmd, 1200).await?;
+  for line in out.lines() {
+    if let Ok(pid) = line.trim().parse::<u32>() { return Some(pid); }
+  }
+  None
+}
+
+#[cfg(windows)]
+async fn exe_for_pid(pid: u32) -> Option<String> {
+  let mut cmd = Command::new("powershell");
+  cmd.args([
+    "-NoProfile","-NonInteractive","-Command",
+    &format!("(Get-Process -Id {}).Path", pid),
+  ]);
+  let out = run_cmd_with_timeout(cmd, 800).await?;
+  let p = out.trim();
+  if p.is_empty() { None } else { Some(p.to_string()) }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+async fn exe_for_pid(pid: u32) -> Option<String> {
+  let link = format!("/proc/{pid}/exe");
+  match fs::read_link(&link) {
+    Ok(p) => Some(p.to_string_lossy().to_string()),
+    Err(_) => {
+      let mut cmd = Command::new("sh");
+      cmd.args(["-lc", &format!("ps -p {} -o comm=", pid)]);
+      run_cmd_with_timeout(cmd, 600).await.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+  }
+}
+
+#[cfg(target_os = "macos")]
+async fn exe_for_pid(pid: u32) -> Option<String> {
+  let mut cmd = Command::new("sh");
+  cmd.args(["-lc", &format!("ps -p {} -o comm=", pid)]);
+  run_cmd_with_timeout(cmd, 600).await.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+async fn find_arkd_by_name() -> Option<u32> {
+  #[cfg(windows)]
+  {
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", "tasklist /FI \"IMAGENAME eq arkd.exe\" /FO CSV /NH"]);
+    if let Some(out) = run_cmd_with_timeout(cmd, 800).await {
+      for line in out.lines() {
+        let l = line.trim_matches('"');
+        if l.to_ascii_lowercase().starts_with("arkd.exe") {
+          let parts: Vec<&str> = l.split("\",\"").collect();
+          if parts.len() > 1 {
+            if let Ok(pid) = parts[1].replace(',', "").parse::<u32>() {
+              return Some(pid);
+            }
+          }
+        }
+      }
+    }
+    None
+  }
+  #[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
+  {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-lc", "pgrep -x arkd || pgrep -f '/arkd(\\s|$)' || true"]);
+    if let Some(out) = run_cmd_with_timeout(cmd, 600).await {
+      for line in out.lines() {
+        if let Ok(pid) = line.trim().parse::<u32>() { return Some(pid); }
+      }
+    }
+    None
+  }
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct ProbeInfo {
+  running: bool,
+  pid: Option<u32>,
+  exe: Option<String>,
+  port: Option<u16>,
+  source: &'static str, // "internal" | "port" | "name" | "none"
+}
+
+async fn probe_external_node() -> ProbeInfo {
+  for p in rpc_ports_to_probe() {
+    if let Some(pid) = pid_listening_on(p).await {
+      let exe = exe_for_pid(pid).await;
+      return ProbeInfo { running: true, pid: Some(pid), exe, port: Some(p), source: "port" };
+    }
+  }
+  if let Some(pid) = find_arkd_by_name().await {
+    let exe = exe_for_pid(pid).await;
+    return ProbeInfo { running: true, pid: Some(pid), exe, port: None, source: "name" };
+  }
+  ProbeInfo { running: false, pid: None, exe: None, port: None, source: "none" }
+}
+
+fn internal_child_status(proc: &NodeProc) -> Option<u32> {
   let mut remove_dead = false;
-  let running = {
+  let pid = {
     let mut g = proc.inner.lock();
     if let Some(child) = g.child.as_mut() {
       match child.try_wait() {
-        Ok(Some(_)) => { remove_dead = true; false }
-        Ok(None)    => true,
-        Err(_)      => { remove_dead = true; false }
+        Ok(Some(_)) => { remove_dead = true; None }
+        Ok(None)    => child.id(),
+        Err(_)      => { remove_dead = true; None }
       }
-    } else { false }
+    } else { None }
   };
   if remove_dead { proc.inner.lock().child = None; }
-  running
+  pid
+}
+
+/* ───────────────── tauri commands ───────────────── */
+
+#[tauri::command]
+pub async fn node_is_running(proc: State<'_, NodeProc>) -> Result<bool, String> {
+  if internal_child_status(&proc).is_some() {
+    return Ok(true);
+  }
+  let probed = probe_external_node().await;
+  Ok(probed.running)
 }
 
 #[tauri::command]
-pub fn node_pid(proc: State<'_, NodeProc>) -> Option<u32> {
-  proc.inner.lock().child.as_ref().and_then(|c| c.id())
+pub async fn node_pid(proc: State<'_, NodeProc>) -> Result<Option<u32>, String> {
+  if let Some(pid) = internal_child_status(&proc) {
+    return Ok(Some(pid));
+  }
+  let probed = probe_external_node().await;
+  Ok(probed.pid)
 }
 
 #[tauri::command]
@@ -438,4 +606,20 @@ pub async fn node_stop(app: AppHandle, proc: State<'_, NodeProc>) -> Result<(), 
 pub async fn node_restart(app: AppHandle, proc: State<'_, NodeProc>) -> Result<(), String> {
   stop_impl(&proc, Some(&app)).await?;
   start_impl(app, &proc, None).await
+}
+
+/* Extra: expose a rich probe for the UI */
+#[tauri::command]
+pub async fn node_probe(proc: State<'_, NodeProc>) -> Result<ProbeInfo, String> {
+  if let Some(pid) = internal_child_status(&proc) {
+    let exe = exe_for_pid(pid).await;
+    return Ok(ProbeInfo {
+      running: true,
+      pid: Some(pid),
+      exe,
+      port: None,
+      source: "internal",
+    });
+  }
+  Ok(probe_external_node().await)
 }

@@ -1,4 +1,3 @@
-// src/state.rs
 use crate::{
   admin_client::AdminClient,
   manifest::{read_manifest, Manifest},
@@ -48,7 +47,9 @@ impl NodeBridge {
     let mtime = meta.modified().ok();
     {
       let last = self.inner.last_mtime.read();
-      if *last == mtime { return; }
+      if *last == mtime {
+        return;
+      }
     }
 
     if let Ok(m) = read_manifest(&self.inner.manifest_path) {
@@ -73,13 +74,17 @@ impl NodeBridge {
 
   /// Get an AdminClient, attempting a lazy refresh first.
   pub fn admin(&self) -> Result<AdminClient, &'static str> {
-    if self.inner.admin.read().is_none() { self.maybe_refresh(); }
+    if self.inner.admin.read().is_none() {
+      self.maybe_refresh();
+    }
     self.inner.admin.read().clone().ok_or("admin not ready")
   }
 
   /// Get an RpcClient, attempting a lazy refresh first.
   pub fn rpc(&self) -> Result<RpcClient, &'static str> {
-    if self.inner.rpc.read().is_none() { self.maybe_refresh(); }
+    if self.inner.rpc.read().is_none() {
+      self.maybe_refresh();
+    }
     self.inner.rpc.read().clone().ok_or("rpc not ready")
   }
 
@@ -97,10 +102,17 @@ impl NodeBridge {
 fn build_clients(m: &Manifest) -> Option<(AdminClient, RpcClient)> {
   let admin = AdminClient::from_manifest(m);
 
+  // Build RPC base; default path is "/" to match curl and the C server.
   let base = format!("http://{}:{}", m.rpc.host, m.rpc.port);
-  let path = std::env::var("ARK_RPC_PATH").unwrap_or_else(|_| "/".to_string());
+  let path = std::env::var("ARK_RPC_PATH")
+    .ok()
+    .filter(|s| !s.trim().is_empty())
+    .unwrap_or_else(|| "/".to_string());
+
   let headers = HeaderMap::new();
-  let rpc = RpcClient::new(base, path, Duration::from_secs(10), false, &headers).ok()?;
+
+  // Short, sane timeouts; connect timeout handled inside RpcClient builder
+  let rpc = RpcClient::new(base, path, Duration::from_secs(4), /*insecure=*/ false, &headers).ok()?;
 
   Some((admin, rpc))
 }

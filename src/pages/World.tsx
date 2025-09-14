@@ -7,54 +7,83 @@ import Section from '../ui/Section';
 import { useNodeSnapshot } from '../hooks/useNode';
 
 type Role = 'relay' | 'miner';
-type StatusModel = { peers?: number; producerOn?: boolean; role?: Role; networkHeight?: number; nodeRunning?: boolean; rpc?: { host: string; port: number } };
+// type Health = { ok: boolean; version: string; abiRev: number; uptimeMs: number; features?: string[]; net?: { id: number; name: string } };
+type StatusModel = { peers?: number; producerOn?: boolean; role?: Role | string; networkHeight?: number; nodeRunning?: boolean; rpc?: { host: string; port: number } };
 type BlockItem = { height: number; ts: number };
 type AiStats = { qps: number; activeJobs: number; trainers: number; gpuUtil: number; queued: number; datasets: number; model: string; tipHash: string };
 
-export default function World(): JSX.Element {
-  const {
-    health, status, blocks, memCount, tpsHist, peerHist,
-  } = useNodeSnapshot();
+export default function World(): React.ReactElement {
+  const { health, status, tipHeight, mempool, role } = useNodeSnapshot();
+
+  const [blocks, setBlocks] = React.useState<BlockItem[]>([]);
+  const [tpsHist, setTpsHist] = React.useState<number[]>(Array(90).fill(0));
+  const [peerHist, setPeerHist] = React.useState<number[]>(Array(90).fill(0));
 
   const [ai, setAi] = React.useState<AiStats>(() => synthAi());
   const [aiQpsHist, setAiQpsHist] = React.useState<number[]>(Array(90).fill(0));
   const [aiTrainHist, setAiTrainHist] = React.useState<number[]>(Array(90).fill(0));
 
-  // lightweight animation / smoothing for AI panel
-  React.useEffect(() => {
-    const mql = matchMedia('(prefers-reduced-motion: reduce)');
-    const id = setInterval(() => {
-      const s: StatusModel = {
-        peers: status.data?.peers ?? 0,
-        producerOn: status.data?.producerOn ?? false,
-        role: (status.data?.role as Role) ?? 'relay',
-        networkHeight: status.data?.networkHeight ?? 0,
-        nodeRunning: status.data?.nodeRunning ?? false,
-        rpc: status.data?.rpc,
-      };
+  const lastHeightRef = React.useRef<number | null>(null);
+  const lastTipTsRef = React.useRef<number>(Date.now());
 
-      const aiTarget = synthAi(s, memCount);
+  // Peer sparkline from status updates
+  React.useEffect(() => {
+    const p = Number(status?.peers ?? 0);
+    setPeerHist(h => push(h, p, 90));
+  }, [status?.peers]);
+
+  // Blocks + TPS from tipHeight (single source of truth)
+  React.useEffect(() => {
+    const h = Number(tipHeight ?? 0);
+    if (!Number.isFinite(h) || h <= 0) return;
+
+    const prev = lastHeightRef.current;
+    const now = Date.now();
+
+    if (prev == null) {
+      lastHeightRef.current = h;
+      lastTipTsRef.current = now;
+      return;
+    }
+
+    if (h > prev) {
+      const delta = h - prev;
+      const ts = now;
+      const add: BlockItem[] = [];
+      for (let i = prev + 1; i <= h; i++) add.push({ height: i, ts });
+      setBlocks(b => trim(b.concat(add), 48));
+
+      const seconds = Math.max(1, Math.round((now - lastTipTsRef.current) / 1000));
+      setTpsHist(hist => push(hist, delta / seconds, 90));
+
+      lastHeightRef.current = h;
+      lastTipTsRef.current = now;
+    }
+  }, [tipHeight]);
+
+  // Synthetic AI panel (optional, replace with real ai.stats later)
+  React.useEffect(() => {
+    const id = setInterval(() => {
+      const target = synthAi(status as Partial<StatusModel> | undefined, mempool);
       setAi(cur => ({
-        ...aiTarget,
-        qps: lerp(cur.qps, aiTarget.qps, 0.25),
-        gpuUtil: lerp(cur.gpuUtil, aiTarget.gpuUtil, 0.2),
-        activeJobs: approachInt(cur.activeJobs, aiTarget.activeJobs),
-        trainers: approachInt(cur.trainers, aiTarget.trainers),
-        queued: approachInt(cur.queued, aiTarget.queued),
-        datasets: approachInt(cur.datasets, aiTarget.datasets),
+        ...target,
+        qps: lerp(cur.qps, target.qps, 0.25),
+        gpuUtil: lerp(cur.gpuUtil, target.gpuUtil, 0.2),
+        activeJobs: approachInt(cur.activeJobs, target.activeJobs),
+        trainers: approachInt(cur.trainers, target.trainers),
+        queued: approachInt(cur.queued, target.queued),
+        datasets: approachInt(cur.datasets, target.datasets),
       }));
-      if (!mql.matches) {
-        setAiQpsHist(h => push(h, aiTarget.qps, 90));
-        setAiTrainHist(h => push(h, aiTarget.activeJobs + aiTarget.queued * 0.4, 90));
-      }
+      setAiQpsHist(h => push(h, target.qps, 90));
+      setAiTrainHist(h => push(h, target.activeJobs + target.queued * 0.4, 90));
     }, 1000);
     return () => clearInterval(id);
-  }, [status.data?.peers, status.data?.producerOn, status.data?.role, status.data?.networkHeight, status.data?.nodeRunning, memCount]);
+  }, [status?.peers, mempool]);
 
-  const running = !!status.data?.nodeRunning;
-  const netName = health.data?.net?.name ?? '—';
-  const netId = health.data?.net?.id != null ? `#${health.data!.net!.id}` : '—';
-  const rpc = status.data?.rpc ? `${status.data.rpc.host}:${status.data.rpc.port}` : '—';
+  const running = !!status?.nodeRunning;
+  const netName = health?.net?.name ?? '—';
+  const netId = health?.net?.id != null ? `#${health!.net!.id}` : '—';
+  const rpc = status?.rpc ? `${status.rpc.host}:${status.rpc.port}` : '—';
 
   return (
     <div className="h-full w-full overflow-auto">
@@ -71,10 +100,10 @@ export default function World(): JSX.Element {
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <Kpi title="Height" value={status.data?.networkHeight ?? '…'} />
+              <Kpi title="Height" value={tipHeight ?? status?.networkHeight ?? '…'} />
               <Kpi title="TPS" value={fmt(tpsHist[tpsHist.length - 1])}><Sparkline data={tpsHist} height={40} /></Kpi>
-              <Kpi title="Peers" value={status.data?.peers ?? '…'}><Sparkline data={peerHist} height={40} /></Kpi>
-              <Kpi title="Producer" value={status.data ? (status.data.producerOn ? 'on' : 'off') : '…'} />
+              <Kpi title="Peers" value={status?.peers ?? '…'}><Sparkline data={peerHist} height={40} /></Kpi>
+              <Kpi title="Producer" value={status ? (status.producerOn ? 'on' : 'off') : '…'} />
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
@@ -91,14 +120,14 @@ export default function World(): JSX.Element {
             <div className="flex items-center justify-between">
               <div className="text-[12px] tracking-widest uppercase text-white/60">Node Meta</div>
               <div className="flex items-center gap-2 text-[12px]">
-                <StatusDot ok={!!status.data?.connected} />
-                <span className="text-white/70">{status.data?.connected ? 'Connected' : 'Offline'}</span>
+                <StatusDot ok={!!Number(status?.peers ?? 0)} />
+                <span className="text-white/70">{Number(status?.peers ?? 0) ? 'Connected' : 'Offline'}</span>
               </div>
             </div>
 
             {/* Tiny network viz */}
             <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.02]">
-              <MiniNetwork peers={status.data?.peers ?? 0} connected={!!status.data?.connected} />
+              <MiniNetwork peers={status?.peers ?? 0} connected={!!Number(status?.peers ?? 0)} />
             </div>
 
             {/* Key facts */}
@@ -108,23 +137,23 @@ export default function World(): JSX.Element {
                 value={<span className="font-mono text-[12px] tabular-nums">{rpc}</span>}
                 copy={rpc !== '—' ? rpc : undefined}
               />
-              <InfoRow label="Version" value={health.data?.version ?? '…'} />
-              <InfoRow label="ABI" value={health.data?.abiRev ?? '…'} />
-              <InfoRow label="Role" value={(status.data?.role ?? '—').toString()} />
+              <InfoRow label="Version" value={health?.version ?? '…'} />
+              <InfoRow label="ABI" value={health?.abiRev ?? '…'} />
+              <InfoRow label="Role" value={(role ?? '—').toString()} />
               <InfoRow
                 label="Producer"
                 value={
-                  <span className={status.data?.producerOn ? 'text-emerald-400' : 'text-white/60'}>
-                    {status.data ? (status.data.producerOn ? 'on' : 'off') : '…'}
+                  <span className={status?.producerOn ? 'text-emerald-400' : 'text-white/60'}>
+                    {status ? (status.producerOn ? 'on' : 'off') : '…'}
                   </span>
                 }
               />
               <InfoRow
                 label="Features"
                 value={
-                  (health.data?.features ?? []).length ? (
+                  (health?.features ?? []).length ? (
                     <div className="flex flex-wrap gap-1.5">
-                      {health.data!.features!.map(f => (
+                      {health!.features!.map(f => (
                         <span key={f} className="rounded border border-white/10 bg-white/5 px-1.5 py-[1px] text-[11px]">{f}</span>
                       ))}
                     </div>
@@ -138,13 +167,13 @@ export default function World(): JSX.Element {
 
       {/* RUNWAY — full-bleed strip */}
       <div className="mx-0 mb-6 px-6">
-        <Runway blocks={blocks as BlockItem[]} />
+        <Runway blocks={blocks} />
       </div>
 
       {/* GRID — fills width */}
       <div className="grid gap-4 px-6 lg:grid-cols-3">
         <Section title="Latest Blocks" padding="sm">
-          <BlocksList items={(blocks as BlockItem[]).slice(-14).reverse()} />
+          <BlocksList items={blocks.slice(-14).reverse()} />
         </Section>
 
         <Section title="AI — Model & Training" padding="sm">
@@ -173,7 +202,7 @@ export default function World(): JSX.Element {
 
               <div className="grid grid-cols-2 gap-3">
                 <Meter label="GPU Util" value={ai.gpuUtil / 100} />
-                <Meter label="Queue Saturation" value={clamp(memCount / 20, 0, 1)} />
+                <Meter label="Queue Saturation" value={clamp(ai.queued / 20, 0, 1)} />
               </div>
 
               <div className="flex gap-2">
@@ -186,7 +215,7 @@ export default function World(): JSX.Element {
 
         <Section title="Mempool" padding="sm">
           <div className="flex items-end justify-between">
-            <div className="text-2xl tabular-nums">{memCount}</div>
+            <div className="text-2xl tabular-nums">{mempool ?? 0}</div>
             <div className="text-[12px] text-white/70">tx pending</div>
           </div>
           <div className="mt-2"><Sparkbar data={barsFrom(tpsHist, 36)} height={36} /></div>
@@ -194,7 +223,7 @@ export default function World(): JSX.Element {
         </Section>
       </div>
 
-      <div className="h-6" /> {/* comfortable bottom spacing */}
+      <div className="h-6" />
     </div>
   );
 }
@@ -203,11 +232,28 @@ export default function World(): JSX.Element {
 
 function GlassAura() {
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden [mask-image:radial-gradient(120%_120%_at_50%_0%,#000_28%,transparent_100%)]">
-      <div className="absolute -top-32 -left-24 h-[56vmin] w-[56vmin] rounded-full blur-[90px] opacity-50" style={{ background:'radial-gradient(circle, rgba(216,185,128,.34), transparent 70%)' }} />
-      <div className="absolute -top-16 right-0 h-[48vmin] w-[48vmin] rounded-full blur-[100px] opacity-45" style={{ background:'radial-gradient(circle, rgba(144,216,255,.32), transparent 70%)' }} />
-      <div className="absolute inset-0 opacity-[0.07] mix-blend-overlay animate-[spin_60s_linear_infinite]" style={{ background:'conic-gradient(from 210deg at 50% 10%, transparent 0 65%, rgba(255,255,255,.22) 75%, transparent 85%)' }} />
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-0 -z-10 overflow-hidden [mask-image:radial-gradient(120%_120%_at_50%_0%,#000_28%,transparent_100%)]"
+    >
+      <div className="absolute -top-32 -left-24 h-[56vmin] w-[56vmin] rounded-full blur-[90px] opacity-50"
+           style={{ background:'radial-gradient(circle, rgba(216,185,128,.34), transparent 70%)' }} />
+      <div className="absolute -top-16 right-0 h-[48vmin] w-[48vmin] rounded-full blur-[100px] opacity-45"
+           style={{ background:'radial-gradient(circle, rgba(144,216,255,.32), transparent 70%)' }} />
+
+      {/* smoother, slower; disabled if prefers-reduced-motion */}
+      <div
+        className="absolute inset-0 opacity-[0.06] mix-blend-overlay aura-spin"
+        style={{ background:'conic-gradient(from 210deg at 50% 10%, transparent 0 65%, rgba(255,255,255,.22) 75%, transparent 85%)' }}
+      />
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .aura-spin { animation: spin 90s linear infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .aura-spin { animation: none !important; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -215,15 +261,12 @@ function GlassAura() {
 function RunePanel({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] p-4">
-      <svg className="pointer-events-none absolute inset-0" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <rect x="6" y="6" width="88" height="88" rx="12" ry="12" fill="none" stroke="rgba(255,255,255,.06)" strokeDasharray="2 6" />
-      </svg>
-      {children}
+      {/* subtle tint only, no dashed rect */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 rounded-xl bg-gradient-to-b from-white/[0.03] to-transparent" />
+      <div className="relative">{children}</div>
     </div>
   );
 }
-
-/* Right-side meta UI bits */
 
 function InfoRow(props: { label: string; value: React.ReactNode; copy?: string }) {
   const { label, value, copy } = props;
@@ -280,11 +323,7 @@ function MiniKpi({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function Tag({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded border border-white/10 bg-white/[0.04] px-2 py-[2px] text-[11px]">
-      {children}
-    </span>
-  );
+  return <span className="rounded border border-white/10 bg-white/[0.04] px-2 py-[2px] text-[11px]">{children}</span>;
 }
 
 function SparkCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -324,8 +363,8 @@ function Donut({ value, label, sub }: { value: number; label: string; sub?: stri
 
 /* ── responsive charts ── */
 
-function useMeasure<T extends HTMLElement>(): [React.RefObject<T>, number, number] {
-  const ref = React.useRef<T>(null);
+function useMeasure<T extends HTMLElement>(): [React.RefObject<T | null>, number, number] {
+  const ref = React.useRef<T | null>(null);
   const [{ w, h }, set] = React.useState({ w: 0, h: 0 });
   React.useEffect(() => {
     const el = ref.current;
@@ -410,13 +449,13 @@ function Runway({ blocks }: { blocks: BlockItem[] }) {
           <span>Latest Blocks</span><span className="opacity-50">·</span><span>tap to open</span>
         </div>
         <div className="[perspective:1200px] overflow-hidden">
-          <div className="animate-[runway_22s_linear_infinite] whitespace-nowrap will-change-transform [transform-style:preserve-3d] [transform:rotateX(10deg)_translateZ(0)]">
-            {(row.length ? row : Array.from({ length: 12 }, (_, i) => ({ height: i + 1, ts: Date.now() })) )
-              .concat(row)
-              .map((b, i) => (
+          <div
+            className="runway-track whitespace-nowrap will-change-transform [transform-style:preserve-3d] [transform:rotateX(10deg)_translateZ(0)]"
+          >
+            {(row.length ? row : Array.from({ length: 12 }, (_, i) => ({ height: i + 1, ts: Date.now() }))).concat(row).map((b, i) => (
               <a
                 key={`${b.height}-${i}`}
-                href={`#explorer/blocks/${b.height}`}
+                href={`#/explorer/blocks/${b.height}`}
                 className="mx-2 inline-flex min-w-[132px] items-center justify-between rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] hover:bg-white/[0.08]"
               >
                 <span className="font-semibold tabular-nums">#{b.height}</span>
@@ -424,8 +463,17 @@ function Runway({ blocks }: { blocks: BlockItem[] }) {
               </a>
             ))}
           </div>
-          <style>{`@keyframes runway{from{transform:translateX(0)}to{transform:translateX(-50%)}}`}</style>
+
+          <style>{`
+            @keyframes runway { from { transform: translate3d(0,0,0); } to { transform: translate3d(-50%,0,0); } }
+            .runway-track { animation: runway 22s linear infinite; }
+            .runway-track:hover { animation-play-state: paused; }
+            @media (prefers-reduced-motion: reduce) {
+              .runway-track { animation: none !important; }
+            }
+          `}</style>
         </div>
+
       </div>
     </div>
   );
@@ -436,7 +484,7 @@ function BlocksList({ items }: { items: BlockItem[] }) {
   return (
     <div className="divide-y divide-white/10">
       {items.map(b => (
-        <a key={b.height} href={`#explorer/blocks/${b.height}`} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-md px-2 py-2 hover:bg-white/[0.03]">
+        <a key={b.height} href={`#/explorer/blocks/${b.height}`} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-md px-2 py-2 hover:bg-white/[0.03]">
           <span className="font-mono text-[13px] tabular-nums">#{b.height}</span>
           <span className="text-[12px] text-white/60">{ago(b.ts)}</span>
           <span className="text-[11px] text-white/50">{shortHash(b.height, b.ts)}</span>
@@ -468,11 +516,12 @@ function MiniNetwork({ peers, connected }: { peers: number; connected: boolean }
       {links.map(([a, b], i) => {
         const A = ringPoint(a, nodes, 110, 80, 52);
         const B = ringPoint(b, nodes, 110, 80, 52);
-        const glow = Math.min(1, peers / 64) * 0.6 + (i % 3 === 0 ? 0.2 : 0);
         return (
           <g key={i}>
             <line x1={A.x} y1={A.y} x2={B.x} y2={B.y} stroke="rgba(255,255,255,.10)" strokeWidth="1" />
-            <line x1={A.x} y1={A.y} x2={B.x} y2={B.y} stroke="url(#g-line-mini)" strokeWidth={1.5} opacity={glow} />
+            <line x1={A.x} y1={A.y} x2={B.x} y2={B.y}
+              stroke="url(#g-line-mini)" strokeWidth={1.5}
+              opacity={Math.min(1, (peers / 48)) * (i % 3 === 0 ? 0.9 : 0.6)} />
           </g>
         );
       })}
@@ -491,6 +540,7 @@ function MiniNetwork({ peers, connected }: { peers: number; connected: boolean }
 
 /* ── utils ── */
 function push<T>(arr: T[], v: T, cap: number) { const out = arr.slice(-cap + 1); out.push(v); return out; }
+function trim<T>(xs: T[], cap: number) { return xs.length > cap ? xs.slice(-cap) : xs; }
 function lerp(a: number, b: number, k: number) { return a + (b - a) * k; }
 function clamp(n: number, min: number, max: number) { return Math.max(min, Math.min(max, n)); }
 function approachInt(a: number, b: number) { return a + Math.sign(b - a) * Math.min(1, Math.abs(b - a)); }

@@ -4,7 +4,7 @@
 
 import * as React from 'react';
 
-export default function BackgroundFX(): JSX.Element {
+export default function BackgroundFX(): React.ReactElement {
   const ref = React.useRef<HTMLDivElement>(null);
 
   // Pointer-parallax via CSS variables (motion-safe, rAF-lerped)
